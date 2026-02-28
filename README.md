@@ -1,0 +1,1 @@
+First run ip.sol in remix ide and copy the ABI and contract address and paste it in contract.js file. Have .env inside frontend and use your PINATA-JWT . Later run the frontend using the command -npm run dev. You will have your project ready.
