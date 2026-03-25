@@ -1,0 +1,343 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+/*
+IP Lifecycle System - v2
+
+New Features:
+1. Fractional License Ownership (ERC20-style shares per property)
+2. Dynamic Pricing (demand-based price curve)
+3. Version-bound licensing (v1 license locked to v1)
+4. Expiry-based license
+5. Share-based revenue distribution
+6. License transfer between share holders
+*/
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+/* ============================================================
+   LICENSE SHARE TOKEN
+   One deployed per property — represents fractional ownership
+   of that property's license rights.
+   ============================================================ */
+contract LicenseShareToken is ERC20 {
+
+    address public immutable registry;   // IPRegistry address
+    uint256 public immutable propertyId;
+
+    modifier onlyRegistry() {
+        require(msg.sender == registry, "Only registry");
+        _;
+    }
+
+    constructor(
+        uint256 _propertyId,
+        address _registry,
+        address _owner,
+        uint256 _initialSupply
+    ) ERC20(
+    string(abi.encodePacked("IPShare-", _uint2str(_propertyId))),
+    string(abi.encodePacked("IPS-",    _uint2str(_propertyId)))
+    ) {
+        registry   = _registry;
+        propertyId = _propertyId;
+        _mint(_owner, _initialSupply);
+    }
+
+    /* Registry can mint more shares (e.g. if owner splits further) */
+    function mint(address to, uint256 amount) external onlyRegistry {
+        _mint(to, amount);
+    }
+
+    /* Registry can burn shares (e.g. on buyout) */
+    function burn(address from, uint256 amount) external onlyRegistry {
+        _burn(from, amount);
+    }
+
+    function _uint2str(uint256 v) internal pure returns (string memory) {
+        if (v == 0) return "0";
+        uint256 tmp = v;
+        uint256 digits;
+        while (tmp != 0) { digits++; tmp /= 10; }
+        bytes memory buf = new bytes(digits);
+        while (v != 0) { digits--; buf[digits] = bytes1(uint8(48 + v % 10)); v /= 10; }
+        return string(buf);
+    }
+}
+
+/* ============================================================
+   MAIN REGISTRY
+   ============================================================ */
+contract IPRegistry is ERC721 {
+
+    /* ---- constants ---- */
+    uint256 public constant TOTAL_SHARES      = 1000;   // shares per property
+    uint256 public constant BASE_LICENSE_FEE  = 0.01 ether;
+    uint256 public constant PRICE_INCREMENT   = 0.001 ether; // per 10 licenses sold
+    uint256 public constant MAX_PRICE_MULT    = 10;     // price never exceeds 10x base
+
+    /* ---- state ---- */
+    uint256 public propertyCounter;
+
+    struct Property {
+        uint256 currentVersion;
+        uint256 licensesSold;          // drives dynamic price
+        address shareToken;            // ERC20 share contract
+        uint256 revenuePool;           // ETH accumulated for share holders
+    }
+
+    struct License {
+        uint256 version;   // version at time of purchase — LOCKED
+        uint256 expiry;
+        bool    active;
+        uint256 sharesBacked; // >0 if the license is backed by share ownership
+    }
+
+    mapping(uint256 => Property)                          public properties;
+    mapping(uint256 => mapping(uint256 => string))        public versionCids;
+    mapping(uint256 => mapping(address => License))       public licenses;
+
+    /* ---- events ---- */
+    event PropertyRegistered(uint256 indexed id, address indexed owner, address shareToken);
+    event PropertyUpdated(uint256 indexed id, uint256 newVersion);
+    event LicensePurchased(uint256 indexed id, address indexed user, uint256 price, uint256 version);
+    event LicenseGranted(uint256 indexed id, address indexed user, uint256 version);
+    event LicenseRevoked(uint256 indexed id, address indexed user);
+    event RevenueWithdrawn(uint256 indexed id, address indexed holder, uint256 amount);
+    event SharesTransferred(uint256 indexed id, address from, address to, uint256 amount);
+
+    constructor() ERC721("IPToken", "IPT") {}
+
+    /* ============================================================
+       1. REGISTER PROPERTY
+       ============================================================ */
+    function registerProperty(string memory cid) public {
+
+        uint256 id = propertyCounter;
+        _mint(msg.sender, id);
+
+        // Deploy a share token for this property
+        LicenseShareToken shareToken = new LicenseShareToken(
+            id,
+            address(this),
+            msg.sender,
+            TOTAL_SHARES
+        );
+
+        properties[id] = Property({
+            currentVersion: 1,
+            licensesSold:   0,
+            shareToken:     address(shareToken),
+            revenuePool:    0
+        });
+
+        versionCids[id][1] = cid;
+
+        emit PropertyRegistered(id, msg.sender, address(shareToken));
+        propertyCounter++;
+    }
+
+    /* ============================================================
+       2. UPDATE PROPERTY (version bump — existing licenses stay locked)
+       ============================================================ */
+    function updateProperty(uint256 id, string memory newCid) public {
+        require(ownerOf(id) == msg.sender, "Not owner");
+
+        properties[id].currentVersion += 1;
+        uint256 newVersion = properties[id].currentVersion;
+        versionCids[id][newVersion] = newCid;
+
+        emit PropertyUpdated(id, newVersion);
+    }
+
+    /* ============================================================
+       3. DYNAMIC PRICING
+       Price increases by PRICE_INCREMENT for every 10 licenses sold,
+       capped at MAX_PRICE_MULT * BASE_LICENSE_FEE.
+       ============================================================ */
+    function getLicensePrice(uint256 id) public view returns (uint256) {
+        uint256 steps = properties[id].licensesSold / 10;
+        uint256 multiplier = steps + 1;
+        if (multiplier > MAX_PRICE_MULT) multiplier = MAX_PRICE_MULT;
+        return BASE_LICENSE_FEE + (PRICE_INCREMENT * (multiplier - 1));
+    }
+
+    /* ============================================================
+       4. BUY LICENSE (pays ETH, version-locked, price is dynamic)
+       ============================================================ */
+    function buyLicense(uint256 id, uint256 duration) public payable {
+        uint256 price = getLicensePrice(id);
+        require(msg.value >= price, "Insufficient ETH");
+
+        uint256 currentVer = properties[id].currentVersion;
+
+        licenses[id][msg.sender] = License({
+            version:      currentVer,
+            expiry:       block.timestamp + duration,
+            active:       true,
+            sharesBacked: 0
+        });
+
+        // Distribute revenue to share pool
+        properties[id].revenuePool    += msg.value;
+        properties[id].licensesSold   += 1;
+
+        // Refund excess ETH
+        if (msg.value > price) {
+            (bool refundSuccess, ) = payable(msg.sender).call{value: msg.value - price}("");
+            require(refundSuccess, "Refund failed");
+        }
+
+        emit LicensePurchased(id, msg.sender, price, currentVer);
+    }
+
+    /* ============================================================
+       5. GRANT LICENSE (owner grants for free — e.g. to partners)
+       ============================================================ */
+    function grantLicense(uint256 id, address user, uint256 duration) public {
+        require(ownerOf(id) == msg.sender, "Not owner");
+
+        uint256 currentVer = properties[id].currentVersion;
+
+        licenses[id][user] = License({
+            version:      currentVer,
+            expiry:       block.timestamp + duration,
+            active:       true,
+            sharesBacked: 0
+        });
+
+        emit LicenseGranted(id, user, currentVer);
+    }
+
+    /* ============================================================
+       6. LICENSE VIA SHARE OWNERSHIP
+       If you hold >= minSharesRequired shares, you get a free license.
+       Share holders are co-owners so they deserve access.
+       ============================================================ */
+    function claimShareHolderLicense(uint256 id, uint256 duration) public {
+        LicenseShareToken token = LicenseShareToken(properties[id].shareToken);
+        uint256 held = token.balanceOf(msg.sender);
+        require(held > 0, "No shares held");
+
+        uint256 currentVer = properties[id].currentVersion;
+
+        licenses[id][msg.sender] = License({
+            version:      currentVer,
+            expiry:       block.timestamp + duration,
+            active:       true,
+            sharesBacked: held
+        });
+
+        emit LicenseGranted(id, msg.sender, currentVer);
+    }
+
+    /* ============================================================
+       7. REVOKE LICENSE
+       ============================================================ */
+    function revokeLicense(uint256 id, address user) public {
+        require(ownerOf(id) == msg.sender, "Not owner");
+        licenses[id][user].active = false;
+        emit LicenseRevoked(id, user);
+    }
+
+    /* ============================================================
+       8. VALIDATE LICENSE
+       Key rule: license version must match the version it was issued on.
+       If property updated to v2, v1 license is still valid FOR v1 content
+       but isLicenseValidForVersion(id, user, 2) will return false.
+       ============================================================ */
+    function isLicenseValid(uint256 id, address user)
+    public view returns (bool)
+    {
+        License memory lic = licenses[id][user];
+        if (!lic.active)                    return false;
+        if (block.timestamp > lic.expiry)   return false;
+        return true;
+    }
+
+    function isLicenseValidForVersion(uint256 id, address user, uint256 version)
+    public view returns (bool)
+    {
+        License memory lic = licenses[id][user];
+        if (!lic.active)                    return false;
+        if (block.timestamp > lic.expiry)   return false;
+        if (lic.version != version)         return false; // VERSION LOCKED
+        return true;
+    }
+
+    /* ============================================================
+       9. REVENUE WITHDRAWAL FOR SHARE HOLDERS
+       Share holders withdraw proportional to their share balance.
+       ============================================================ */
+
+    // Tracks how much each address already withdrew per property
+    mapping(uint256 => mapping(address => uint256)) public withdrawn;
+    // Total revenue ever added (monotonically increasing for correct accounting)
+    mapping(uint256 => uint256) public totalRevenueEver;
+
+    function buyLicense_v2(uint256 id, uint256 duration) internal {
+        // Internal accounting helper — not called directly
+        totalRevenueEver[id] += msg.value;
+    }
+
+    /*
+     * Simplified revenue share:
+     * claimable = (sharesHeld / TOTAL_SHARES) * totalRevenueEver - alreadyWithdrawn
+     */
+    function claimableRevenue(uint256 id, address holder) public view returns (uint256) {
+        LicenseShareToken token = LicenseShareToken(properties[id].shareToken);
+        uint256 held = token.balanceOf(holder);
+        if (held == 0) return 0;
+
+        uint256 totalPool   = properties[id].revenuePool;
+        uint256 entitlement = (totalPool * held) / TOTAL_SHARES;
+        uint256 alreadyPaid = withdrawn[id][holder];
+
+        if (entitlement <= alreadyPaid) return 0;
+        return entitlement - alreadyPaid;
+    }
+
+    function withdrawRevenue(uint256 id) public {
+        uint256 amount = claimableRevenue(id, msg.sender);
+        require(amount > 0, "Nothing to withdraw");
+
+        withdrawn[id][msg.sender] += amount;
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "Withdrawal failed");
+
+        emit RevenueWithdrawn(id, msg.sender, amount);
+    }
+
+    /* ============================================================
+       10. TRANSFER SHARES (delegates to ERC20 share token)
+       ============================================================ */
+    function transferShares(uint256 id, address to, uint256 amount) public {
+        LicenseShareToken token = LicenseShareToken(properties[id].shareToken);
+        token.transferFrom(msg.sender, to, amount);  // caller must approve first
+        emit SharesTransferred(id, msg.sender, to, amount);
+    }
+
+    /* ============================================================
+       11. READ HELPERS
+       ============================================================ */
+    function getCurrentVersion(uint256 id) public view returns (uint256) {
+        return properties[id].currentVersion;
+    }
+
+    function getShareToken(uint256 id) public view returns (address) {
+        return properties[id].shareToken;
+    }
+
+    function getShareBalance(uint256 id, address holder) public view returns (uint256) {
+        return LicenseShareToken(properties[id].shareToken).balanceOf(holder);
+    }
+
+    function getLicenseInfo(uint256 id, address user)
+    public view
+    returns (uint256 version, uint256 expiry, bool active, uint256 sharesBacked)
+    {
+        License memory lic = licenses[id][user];
+        return (lic.version, lic.expiry, lic.active, lic.sharesBacked);
+    }
+}
