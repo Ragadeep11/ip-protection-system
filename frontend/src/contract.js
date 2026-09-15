@@ -1160,4 +1160,30 @@ export const contractABI=[
         "stateMutability": "view",
         "type": "function"
     }
-]
+];
+
+import { ethers } from "ethers";
+
+export const getProvider = () => {
+    if (typeof window !== "undefined" && window.ethereum) {
+        return new ethers.BrowserProvider(window.ethereum);
+    }
+    return null;
+};
+
+export const getSigner = async () => {
+    if (typeof window === "undefined" || !window.ethereum) {
+        throw new Error("MetaMask is not installed. Please install MetaMask to interact with the blockchain.");
+    }
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    return getProvider().getSigner();
+};
+
+export const getContract = async () => {
+    const s = await getSigner();
+    return new ethers.Contract(contractAddress, contractABI, s);
+};
+
+export const getAddress = async () => {
+    return (await getSigner()).getAddress();
+};

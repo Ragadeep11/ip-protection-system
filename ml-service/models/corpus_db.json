@@ -1,0 +1,25 @@
+﻿[
+  {
+    "id": 0,
+    "title": "Decentralized Autonomous Intellectual Property Protocol",
+    "type": "text",
+    "cid": "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
+    "content_preview": "This specification describes a decentralized autonomous protocol for managing intellectual property on Ethereum with fractional license ownership and dynamic bonding curve pricing.",
+    "text_content": "This specification describes a decentralized autonomous protocol for managing intellectual property on Ethereum with fractional license ownership and dynamic bonding curve pricing. Creators register verifiable digital assets and retain royalty shares while licensing rights are transferred transparently across web3 marketplaces.",
+    "owner": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "registered_at": "2026-09-10T10:00:00Z"
+  },
+  {
+    "id": 1,
+    "title": "ChainLicense Geometric Shield Logo",
+    "type": "image",
+    "cid": "QmZtmD2qt8fJpq3CLDHtaogZbaY4nd6aebPxZNJkLkN2R5",
+    "fingerprints": {
+      "dhash": "1010101010101010110011001100110000110011001100111111000011110000",
+      "ahash": "1111111110000001100110011001100110011001100110011000000111111111",
+      "phash": "1100100110010110001111001100001110100101010110101111000000001111"
+    },
+    "owner": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "registered_at": "2026-09-11T12:00:00Z"
+  }
+]
