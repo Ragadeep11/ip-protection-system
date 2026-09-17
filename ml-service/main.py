@@ -1,4 +1,4 @@
-﻿"""
+"""
 IP Protection System - ML Microservice API
 FastAPI service exposing plagiarism detection, transformation forensics,
 and IP asset corpus indexing endpoints.
@@ -252,64 +252,67 @@ async def register_asset_to_corpus(
     Registers a new intellectual property asset into the ML corpus.
     Computes fingerprints/features and persists to corpus_db.json.
     """
-    if file is not None:
-        filename = file.filename.lower() if file.filename else ""
-        content_type = file.content_type or ""
+    try:
+        if file is not None:
+            filename = file.filename.lower() if file.filename else ""
+            content_type = file.content_type or ""
 
-        # Image registration
-        if any(filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]) or "image/" in content_type:
-            contents = await file.read()
-            img = Image.open(io.BytesIO(contents)).convert("RGB")
-            record = corpus_manager.add_image_asset(
-                asset_id=id,
-                title=title,
-                img=img,
-                cid=cid,
-                owner=owner
-            )
-            return {"status": "success", "message": "Image asset registered into ML corpus", "record": record}
+            # Image registration
+            if any(filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]) or "image/" in content_type:
+                contents = await file.read()
+                img = Image.open(io.BytesIO(contents)).convert("RGB")
+                record = corpus_manager.add_image_asset(
+                    asset_id=id,
+                    title=title,
+                    img=img,
+                    cid=cid,
+                    owner=owner
+                )
+                return {"status": "success", "message": "Image asset registered into ML corpus", "record": record}
 
-        # PDF registration
-        if filename.endswith(".pdf") or "pdf" in content_type:
+            # PDF registration
+            if filename.endswith(".pdf") or "pdf" in content_type:
+                contents = await file.read()
+                extracted = extract_text_from_pdf_bytes(contents)
+                record = corpus_manager.add_text_asset(
+                    asset_id=id,
+                    title=title,
+                    text=extracted,
+                    cid=cid,
+                    owner=owner
+                )
+                return {"status": "success", "message": "PDF text registered into ML corpus", "record": record}
+
+            # Text file registration
             contents = await file.read()
-            extracted = extract_text_from_pdf_bytes(contents)
+            try:
+                t = contents.decode("utf-8")
+            except UnicodeDecodeError:
+                t = contents.decode("latin-1", errors="ignore")
+
             record = corpus_manager.add_text_asset(
                 asset_id=id,
                 title=title,
-                text=extracted,
+                text=t,
                 cid=cid,
                 owner=owner
             )
-            return {"status": "success", "message": "PDF text registered into ML corpus", "record": record}
+            return {"status": "success", "message": "Text asset registered into ML corpus", "record": record}
 
-        # Text file registration
-        contents = await file.read()
-        try:
-            t = contents.decode("utf-8")
-        except UnicodeDecodeError:
-            t = contents.decode("latin-1", errors="ignore")
+        elif text_content and text_content.strip():
+            record = corpus_manager.add_text_asset(
+                asset_id=id,
+                title=title,
+                text=text_content,
+                cid=cid,
+                owner=owner
+            )
+            return {"status": "success", "message": "Text content registered into ML corpus", "record": record}
 
-        record = corpus_manager.add_text_asset(
-            asset_id=id,
-            title=title,
-            text=t,
-            cid=cid,
-            owner=owner
-        )
-        return {"status": "success", "message": "Text asset registered into ML corpus", "record": record}
-
-    elif text_content and text_content.strip():
-        record = corpus_manager.add_text_asset(
-            asset_id=id,
-            title=title,
-            text=text_content,
-            cid=cid,
-            owner=owner
-        )
-        return {"status": "success", "message": "Text content registered into ML corpus", "record": record}
-
-    else:
-        raise HTTPException(status_code=400, detail="Missing file or text_content for registration.")
+        else:
+            raise HTTPException(status_code=400, detail="Missing file or text_content for registration.")
+    except ValueError as ve:
+        raise HTTPException(status_code=409, detail=str(ve))
 
 
 if __name__ == "__main__":

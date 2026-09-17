@@ -85,6 +85,7 @@ contract IPRegistry is ERC721 {
         uint256 licensesSold;          // drives dynamic price
         address shareToken;            // ERC20 share contract
         uint256 revenuePool;           // ETH accumulated for share holders
+        bytes32 contentHash;           // cryptographic fingerprint of content/image
     }
 
     struct License {
@@ -98,8 +99,15 @@ contract IPRegistry is ERC721 {
     mapping(uint256 => mapping(uint256 => string))        public versionCids;
     mapping(uint256 => mapping(address => License))       public licenses;
 
+    // IP Protection & Anti-Copying mappings (prevents duplicate image/asset registration)
+    mapping(string => bool)                               public isCidRegistered;
+    mapping(string => uint256)                            public cidToPropertyId;
+    mapping(bytes32 => bool)                              public isContentHashRegistered;
+    mapping(bytes32 => uint256)                           public contentHashToPropertyId;
+
     /* ---- events ---- */
     event PropertyRegistered(uint256 indexed id, address indexed owner, address shareToken);
+    event PropertyRegisteredWithHash(uint256 indexed id, address indexed owner, address shareToken, bytes32 contentHash);
     event PropertyUpdated(uint256 indexed id, uint256 newVersion);
     event LicensePurchased(uint256 indexed id, address indexed user, uint256 price, uint256 version);
     event LicenseGranted(uint256 indexed id, address indexed user, uint256 version);
@@ -110,9 +118,20 @@ contract IPRegistry is ERC721 {
     constructor() ERC721("IPToken", "IPT") {}
 
     /* ============================================================
-       1. REGISTER PROPERTY
+       1. REGISTER PROPERTY (Enforces unique CID and unique contentHash)
        ============================================================ */
     function registerProperty(string memory cid) public {
+        registerPropertyWithHash(cid, bytes32(0));
+    }
+
+    function registerPropertyWithHash(string memory cid, bytes32 contentHash) public {
+        require(bytes(cid).length > 0, "CID cannot be empty");
+        require(!isCidRegistered[cid], "IP Protection: Asset with this image/CID is already registered!");
+        if (contentHash != bytes32(0)) {
+            require(!isContentHashRegistered[contentHash], "IP Protection: Asset with this content hash is already registered!");
+            isContentHashRegistered[contentHash] = true;
+            contentHashToPropertyId[contentHash] = propertyCounter;
+        }
 
         uint256 id = propertyCounter;
         _mint(msg.sender, id);
@@ -129,12 +148,18 @@ contract IPRegistry is ERC721 {
             currentVersion: 1,
             licensesSold:   0,
             shareToken:     address(shareToken),
-            revenuePool:    0
+            revenuePool:    0,
+            contentHash:    contentHash
         });
 
         versionCids[id][1] = cid;
+        isCidRegistered[cid] = true;
+        cidToPropertyId[cid] = id;
 
         emit PropertyRegistered(id, msg.sender, address(shareToken));
+        if (contentHash != bytes32(0)) {
+            emit PropertyRegisteredWithHash(id, msg.sender, address(shareToken), contentHash);
+        }
         propertyCounter++;
     }
 
@@ -142,11 +167,25 @@ contract IPRegistry is ERC721 {
        2. UPDATE PROPERTY (version bump — existing licenses stay locked)
        ============================================================ */
     function updateProperty(uint256 id, string memory newCid) public {
+        updatePropertyWithHash(id, newCid, bytes32(0));
+    }
+
+    function updatePropertyWithHash(uint256 id, string memory newCid, bytes32 newContentHash) public {
         require(ownerOf(id) == msg.sender, "Not owner");
+        require(bytes(newCid).length > 0, "New CID cannot be empty");
+        require(!isCidRegistered[newCid], "IP Protection: New CID already registered to another property");
+        if (newContentHash != bytes32(0)) {
+            require(!isContentHashRegistered[newContentHash], "IP Protection: New content hash already registered");
+            isContentHashRegistered[newContentHash] = true;
+            contentHashToPropertyId[newContentHash] = id;
+            properties[id].contentHash = newContentHash;
+        }
 
         properties[id].currentVersion += 1;
         uint256 newVersion = properties[id].currentVersion;
         versionCids[id][newVersion] = newCid;
+        isCidRegistered[newCid] = true;
+        cidToPropertyId[newCid] = id;
 
         emit PropertyUpdated(id, newVersion);
     }
@@ -339,5 +378,24 @@ contract IPRegistry is ERC721 {
     {
         License memory lic = licenses[id][user];
         return (lic.version, lic.expiry, lic.active, lic.sharesBacked);
+    }
+
+    /* Anti-Copying & IP Verification Read Helpers */
+    function isAssetRegistered(string memory cid) public view returns (bool) {
+        return isCidRegistered[cid];
+    }
+
+    function getPropertyByCid(string memory cid) public view returns (uint256) {
+        require(isCidRegistered[cid], "CID is not registered");
+        return cidToPropertyId[cid];
+    }
+
+    function isContentRegistered(bytes32 contentHash) public view returns (bool) {
+        return isContentHashRegistered[contentHash];
+    }
+
+    function getPropertyByContentHash(bytes32 contentHash) public view returns (uint256) {
+        require(isContentHashRegistered[contentHash], "Content hash is not registered");
+        return contentHashToPropertyId[contentHash];
     }
 }

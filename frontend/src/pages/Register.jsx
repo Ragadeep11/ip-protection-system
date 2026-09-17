@@ -1,9 +1,10 @@
-﻿import React, { useState } from "react";
+import React, { useState } from "react";
 import { css, Field, Spinner, MAX_FILE_MB, short } from "../components/UIPrimitives";
 import { PlagiarismReport } from "../components/PlagiarismReport";
 import { verifyIPAsset, syncAssetToMLCorpus } from "../services/mlService";
 import { getContract, getAddress } from "../contract";
 import axios from "axios";
+import { ethers } from "ethers";
 
 export function Register({ onRegistered, showToast }) {
     const [file, setFile] = useState(null);
@@ -62,27 +63,101 @@ export function Register({ onRegistered, showToast }) {
         return res.data.IpfsHash;
     };
 
+    const computeFileHash = async (f) => {
+        try {
+            const buf = await f.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            return ethers.keccak256(bytes);
+        } catch (e) {
+            console.warn("Could not compute file hash:", e);
+            return null;
+        }
+    };
+
     const register = async () => {
         if (!file) return alert("Please select a file first");
 
-        // Safety verification check
-        if (auditReport && auditReport.risk_level === "HIGH") {
-            const confirmProceed = window.confirm(
-                "Warning: ML Audit detected high similarity or derivative transformation with existing protected IP. Are you sure you want to register this asset?"
+        if (auditing) {
+            return alert("ML forensics audit is still running. Please wait for the analysis to complete.");
+        }
+
+        // STRICT ANTI-COPYING ENFORCEMENT: Reject any plagiarized or duplicate asset
+        if (auditReport && (auditReport.risk_level === "HIGH" || auditReport.status === "INFRINGING_COPY" || auditReport.status === "PLAGIARISM_DETECTED")) {
+            const matchedId = auditReport.best_match?.id !== undefined ? `Property #${auditReport.best_match.id}` : "an existing IP";
+            const matchedTitle = auditReport.best_match?.title ? ` ("${auditReport.best_match.title}")` : "";
+            alert(
+                `⛔ REGISTRATION BLOCKED!\n\n` +
+                `The ML forensics engine detected high similarity (${auditReport.percentage}%) matching ${matchedId}${matchedTitle}.\n\n` +
+                `Under intellectual property rules, registering an identical, copied, or derivative work is strictly prohibited.`
             );
-            if (!confirmProceed) return;
+            return;
         }
 
         setBusy(true);
         setResult(null);
         try {
+            // 1. Compute cryptographic hash of image/file content
+            const contentHash = await computeFileHash(file);
+
+            // 2. Pre-check on-chain registration state before spending gas or pinning
+            const contract = await getContract();
+            if (contentHash) {
+                try {
+                    const isHashRegistered = await contract.isContentHashRegistered(contentHash);
+                    if (isHashRegistered) {
+                        let existingId = "unknown";
+                        try {
+                            existingId = (await contract.contentHashToPropertyId(contentHash)).toString();
+                        } catch (e) {}
+                        throw new Error(
+                            `Blockchain Anti-Copying Enforcement: This identical image/content is already registered on-chain as Property #${existingId}! Duplicate registration is strictly prohibited.`
+                        );
+                    }
+                } catch (err) {
+                    if (err.message.includes("Blockchain Anti-Copying")) throw err;
+                }
+            }
+
+            // 3. Pin to IPFS
             setPct(0);
             const cid = await uploadToIPFS(file, (p) => setPct(p));
             setPct(null);
 
-            const contract = await getContract();
-            const tx = await contract.registerProperty(cid);
-            await tx.wait();
+            // 4. Verify CID uniqueness on-chain
+            try {
+                const isCidReg = await contract.isCidRegistered(cid);
+                if (isCidReg) {
+                    let existingId = "unknown";
+                    try {
+                        existingId = (await contract.cidToPropertyId(cid)).toString();
+                    } catch (e) {}
+                    throw new Error(
+                        `Blockchain Anti-Copying Enforcement: An asset with this identical image CID (${cid}) is already registered on-chain as Property #${existingId}!`
+                    );
+                }
+            } catch (err) {
+                if (err.message.includes("Blockchain Anti-Copying")) throw err;
+            }
+
+            // 5. Mint on-chain with anti-copying enforcement
+            let tx;
+            const hashToPass = contentHash || ethers.ZeroHash;
+            try {
+                if (typeof contract.registerPropertyWithHash === "function") {
+                    tx = await contract.registerPropertyWithHash(cid, hashToPass);
+                } else {
+                    tx = await contract.registerProperty(cid);
+                }
+                await tx.wait();
+            } catch (contractErr) {
+                const errMsg = contractErr?.reason || contractErr?.message || "";
+                if (errMsg.includes("already registered") || errMsg.includes("IP Protection")) {
+                    throw new Error(
+                        "Smart contract transaction reverted: This asset or image is already registered on the blockchain. Duplicate registration was blocked by IPRegistry."
+                    );
+                }
+                throw contractErr;
+            }
 
             const count = await contract.propertyCounter();
             const newId = Number(count) - 1;
@@ -104,7 +179,7 @@ export function Register({ onRegistered, showToast }) {
         }
     };
 
-    const isHighRisk = auditReport?.risk_level === "HIGH";
+    const isHighRisk = auditReport?.risk_level === "HIGH" || auditReport?.status === "INFRINGING_COPY" || auditReport?.status === "PLAGIARISM_DETECTED";
 
     return (
         <div style={{ maxWidth: 640 }}>
@@ -199,27 +274,47 @@ export function Register({ onRegistered, showToast }) {
                 )}
                 {auditReport && !auditing && <PlagiarismReport report={auditReport} />}
 
-                {/* Submit button with smart validation */}
+                {/* Submit button with strict IP protection validation */}
                 <div style={{ marginTop: 20 }}>
                     <button
                         style={{
-                            ...css.btn(isHighRisk ? "warning" : "primary", busy || !file),
+                            ...css.btn(isHighRisk ? "warning" : "primary", busy || !file || auditing || isHighRisk),
                             width: "100%",
-                            padding: 14
+                            padding: 14,
+                            opacity: (isHighRisk || auditing) ? 0.6 : 1,
+                            cursor: (isHighRisk || auditing || busy || !file) ? "not-allowed" : "pointer"
                         }}
                         onClick={register}
-                        disabled={busy || !file}
+                        disabled={busy || !file || auditing || isHighRisk}
                     >
                         {busy ? (
                             <>
                                 <Spinner /> &nbsp;Pinning to IPFS & Minting On-Chain…
                             </>
+                        ) : auditing ? (
+                            <>
+                                <Spinner /> &nbsp;Auditing Asset Similarity…
+                            </>
                         ) : isHighRisk ? (
-                            "⚠ Proceed with Mint (Similarity Warning)"
+                            "⛔ Registration Blocked: Duplicate / Infringing Content"
                         ) : (
                             "Mint IP Asset & Index to ML Corpus"
                         )}
                     </button>
+                    {isHighRisk && (
+                        <div style={{
+                            marginTop: 12,
+                            padding: "12px 14px",
+                            borderRadius: 8,
+                            background: "rgba(255, 68, 68, 0.08)",
+                            border: "1px solid rgba(255, 68, 68, 0.3)",
+                            color: "#ff6b6b",
+                            fontSize: 12,
+                            lineHeight: 1.5
+                        }}>
+                            <strong>🚫 Intellectual Property Protection Alert:</strong> Minting is strictly blocked because this asset matches existing registered IP #{auditReport.best_match?.id !== undefined ? auditReport.best_match.id : "?"} {auditReport.best_match?.title ? `("${auditReport.best_match.title}")` : ""} with {auditReport.percentage}% similarity. Re-registering copied or derivative images under a different title or ID is prevented.
+                        </div>
+                    )}
                 </div>
             </div>
 

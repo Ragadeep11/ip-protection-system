@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import cors from "cors";
 import multer from "multer";
 import axios from "axios";
@@ -129,7 +129,8 @@ app.post("/api/corpus/register", upload.single("file"), async (req, res) => {
     });
   } catch (error) {
     console.error("[Backend Corpus Register Error]:", error.message);
-    res.status(500).json({
+    const status = error.response?.status || 500;
+    res.status(status).json({
       success: false,
       error: error.response?.data?.detail || error.message
     });

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit and Integration Tests for ML Similarity & Transformation Forensics
 """
 
@@ -25,6 +25,14 @@ from transformation import (
 
 
 class TestMLService(unittest.TestCase):
+
+    def setUp(self):
+        import copy
+        self._saved_corpus = copy.deepcopy(corpus_manager.corpus)
+
+    def tearDown(self):
+        corpus_manager.corpus = self._saved_corpus
+        corpus_manager.save()
 
     def test_text_exact_similarity(self):
         text_a = "Decentralized autonomous intellectual property protocol on Ethereum."
@@ -79,6 +87,30 @@ class TestMLService(unittest.TestCase):
         self.assertGreaterEqual(res["highest_similarity"], 0.70)
         self.assertEqual(res["risk_level"], "HIGH")
         self.assertIn("PLAGIARISM", res["status"])
+
+    def test_duplicate_image_rejection(self):
+        # Create a unique test image
+        img = Image.new("RGB", (64, 64), color=(120, 80, 210))
+        test_cid = "QmTestUniqueImageCID12345"
+        # First registration should succeed
+        corpus_manager.add_image_asset(asset_id=9991, title="Original IP", img=img, cid=test_cid)
+        
+        # Second registration with SAME image, different title and ID must be rejected!
+        with self.assertRaises(ValueError) as ctx:
+            corpus_manager.add_image_asset(asset_id=9992, title="Copied IP with New ID", img=img, cid="QmDifferentCID54321")
+        self.assertIn("Duplicate asset rejected", str(ctx.exception))
+
+    def test_duplicate_cid_rejection(self):
+        # Re-registering with an already existing CID must be rejected
+        existing_cid = "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco"
+        with self.assertRaises(ValueError) as ctx:
+            corpus_manager.add_text_asset(
+                asset_id=8888,
+                title="Plagiarized Copy",
+                text="Some unique text here",
+                cid=existing_cid
+            )
+        self.assertIn("Duplicate asset rejected", str(ctx.exception))
 
 
 if __name__ == "__main__":

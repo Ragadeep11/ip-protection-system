@@ -366,7 +366,44 @@ class CorpusManager:
     def get_all(self) -> List[Dict[str, Any]]:
         return self.corpus
 
+    def find_duplicate(self, cid: Optional[str] = None, img: Optional[Image.Image] = None, text: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Checks if an identical or duplicate asset already exists in the corpus."""
+        for item in self.corpus:
+            # 1. Exact CID match
+            if cid and item.get("cid") and item.get("cid") == cid:
+                return {
+                    "reason": "EXACT_CID_MATCH",
+                    "matched_item": item,
+                    "similarity": 1.0
+                }
+            # 2. Duplicate Image Fingerprint (exact or near-identical perceptual hash)
+            if img is not None and item.get("type") == "image" and item.get("fingerprints"):
+                fps = compute_image_fingerprints(img)
+                cmp_res = compare_image_fingerprints(fps, item["fingerprints"])
+                if cmp_res["composite_similarity"] >= 0.95:
+                    return {
+                        "reason": "DUPLICATE_IMAGE_FINGERPRINT",
+                        "matched_item": item,
+                        "similarity": cmp_res["composite_similarity"]
+                    }
+            # 3. Duplicate Text Content
+            if text is not None and item.get("type") == "text" and item.get("text_content"):
+                sim_res = calculate_text_similarity(text, item["text_content"])
+                if sim_res["score"] >= 0.90:
+                    return {
+                        "reason": "DUPLICATE_TEXT_CONTENT",
+                        "matched_item": item,
+                        "similarity": sim_res["score"]
+                    }
+        return None
+
     def add_text_asset(self, asset_id: Any, title: str, text: str, cid: str, owner: str = "") -> Dict[str, Any]:
+        dup = self.find_duplicate(cid=cid, text=text)
+        if dup:
+            matched = dup["matched_item"]
+            raise ValueError(
+                f"Duplicate asset rejected: Asset already registered in corpus as Property #{matched['id']} ('{matched['title']}')."
+            )
         record = {
             "id": asset_id,
             "title": title or f"IP Asset #{asset_id}",
@@ -382,6 +419,12 @@ class CorpusManager:
         return record
 
     def add_image_asset(self, asset_id: Any, title: str, img: Image.Image, cid: str, owner: str = "") -> Dict[str, Any]:
+        dup = self.find_duplicate(cid=cid, img=img)
+        if dup:
+            matched = dup["matched_item"]
+            raise ValueError(
+                f"Duplicate asset rejected: Asset already registered in corpus as Property #{matched['id']} ('{matched['title']}')."
+            )
         fps = compute_image_fingerprints(img)
         record = {
             "id": asset_id,
