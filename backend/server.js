@@ -4,12 +4,43 @@ import multer from "multer";
 import axios from "axios";
 import FormData from "form-data";
 import dotenv from "dotenv";
+import { ethers } from "ethers";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || "http://localhost:8000";
+const RPC_URL = process.env.RPC_URL || "http://127.0.0.1:8545";
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || "0x965B18FA15cB829e32b0dFb806E955320dC8DeC0";
+
+// Smart contract connection to IPRegistry
+let contractInstance = null;
+const candidatePaths = [
+  path.resolve(__dirname, "../contracts/IPRegistry.json"),
+  path.resolve(__dirname, "contracts/IPRegistry.json"),
+  path.resolve(process.cwd(), "contracts/IPRegistry.json"),
+  path.resolve(process.cwd(), "../contracts/IPRegistry.json")
+];
+for (const p of candidatePaths) {
+  if (fs.existsSync(p)) {
+    try {
+      const artifact = JSON.parse(fs.readFileSync(p, "utf8"));
+      const provider = new ethers.JsonRpcProvider(RPC_URL);
+      contractInstance = new ethers.Contract(CONTRACT_ADDRESS, artifact.abi, provider);
+      console.log(`[Blockchain]: Connected to IPRegistry at ${CONTRACT_ADDRESS} via ${RPC_URL}`);
+      break;
+    } catch (e) {
+      console.warn("[Blockchain Initialization Note]:", e.message);
+    }
+  }
+}
 
 // Memory storage for file uploads
 const upload = multer({
@@ -98,10 +129,76 @@ app.post("/api/verify", upload.single("file"), async (req, res) => {
   }
 });
 
-// Register newly minted IP into ML Corpus
+// Register newly minted IP into ML Corpus with Blockchain Patent Gatekeeper
 app.post("/api/corpus/register", upload.single("file"), async (req, res) => {
   try {
     const { id, title, cid, owner, text_content } = req.body;
+    const contentHash = req.file ? ethers.keccak256(req.file.buffer) : (req.body.contentHash || null);
+
+    // Blockchain Patent & Anti-Copying Gatekeeper:
+    // If the image contentHash or CID is already patented on-chain,
+    // prevent unauthorized or duplicate claims under different IDs/titles.
+    if (contractInstance) {
+      try {
+        // 1. Content Hash Verification
+        if (contentHash && contentHash !== ethers.ZeroHash) {
+          const isHashReg = await contractInstance.isContentHashRegistered(contentHash);
+          if (isHashReg) {
+            try {
+              const patent = await contractInstance.getPatentByHash(contentHash);
+              const patentId = patent[0].toString();
+              const patentOwner = patent[1];
+              const blockNumber = patent[2].toString();
+              const patentTitle = patent[5];
+
+              // Block duplicate or fraudulent claims
+              if (!owner || patentOwner.toLowerCase() !== owner.toLowerCase() || (id !== undefined && String(id) !== patentId)) {
+                console.warn(`[Patent Gatekeeper] Blocked registration of patented image. Patented in Block #${blockNumber} by ${patentOwner}`);
+                return res.status(403).json({
+                  success: false,
+                  error: `Patent Claim Blocked: This asset's image is already patented on the blockchain in Block #${blockNumber} under Property #${patentId} ("${patentTitle}") by ${patentOwner}. Duplicate claims with modified title or ID are prohibited.`
+                });
+              }
+            } catch (err) {
+              return res.status(403).json({
+                success: false,
+                error: "Patent Claim Blocked: Asset with this image content hash is already patented on-chain."
+              });
+            }
+          }
+        }
+
+        // 2. CID Uniqueness Verification
+        if (cid && cid.trim().length > 0) {
+          const isCidReg = await contractInstance.isCidRegistered(cid);
+          if (isCidReg) {
+            try {
+              const patent = await contractInstance.getPatentByCid(cid);
+              const patentId = patent[0].toString();
+              const patentOwner = patent[1];
+              const blockNumber = patent[2].toString();
+              const patentTitle = patent[5];
+
+              if (!owner || patentOwner.toLowerCase() !== owner.toLowerCase() || (id !== undefined && String(id) !== patentId)) {
+                console.warn(`[Patent Gatekeeper] Blocked registration of patented CID. Patented in Block #${blockNumber} by ${patentOwner}`);
+                return res.status(403).json({
+                  success: false,
+                  error: `Patent Claim Blocked: This CID is already patented on the blockchain in Block #${blockNumber} under Property #${patentId} ("${patentTitle}") by ${patentOwner}. Duplicate claims with modified title or ID are prohibited.`
+                });
+              }
+            } catch (err) {
+              return res.status(403).json({
+                success: false,
+                error: "Patent Claim Blocked: Asset with this CID is already patented on-chain."
+              });
+            }
+          }
+        }
+      } catch (chainErr) {
+        // RPC lookup skipped if node not currently reachable; ML similarity checks will enforce
+        console.warn("[Blockchain Gatekeeper Check Skipped]:", chainErr.message);
+      }
+    }
 
     const form = new FormData();
     form.append("id", id || 0);
@@ -134,6 +231,55 @@ app.post("/api/corpus/register", upload.single("file"), async (req, res) => {
       success: false,
       error: error.response?.data?.detail || error.message
     });
+  }
+});
+
+// Query On-Chain Patent by CID or Content Hash
+app.get("/api/blockchain/patent/:identifier", async (req, res) => {
+  if (!contractInstance) {
+    return res.status(503).json({
+      success: false,
+      error: "Smart contract connection is not available"
+    });
+  }
+
+  const { identifier } = req.params;
+  try {
+    if (identifier.startsWith("0x") && identifier.length === 66) {
+      const isReg = await contractInstance.isContentHashRegistered(identifier);
+      if (!isReg) {
+        return res.status(404).json({ success: false, patented: false, message: "Asset hash not patented" });
+      }
+      const patent = await contractInstance.getPatentByHash(identifier);
+      return res.json({
+        success: true,
+        patented: true,
+        propertyId: patent[0].toString(),
+        owner: patent[1],
+        blockNumber: patent[2].toString(),
+        timestamp: patent[3].toString(),
+        cid: patent[4],
+        title: patent[5]
+      });
+    } else {
+      const isReg = await contractInstance.isCidRegistered(identifier);
+      if (!isReg) {
+        return res.status(404).json({ success: false, patented: false, message: "Asset CID not patented" });
+      }
+      const patent = await contractInstance.getPatentByCid(identifier);
+      return res.json({
+        success: true,
+        patented: true,
+        propertyId: patent[0].toString(),
+        owner: patent[1],
+        blockNumber: patent[2].toString(),
+        timestamp: patent[3].toString(),
+        contentHash: patent[4],
+        title: patent[5]
+      });
+    }
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

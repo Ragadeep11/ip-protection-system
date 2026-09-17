@@ -86,6 +86,9 @@ contract IPRegistry is ERC721 {
         address shareToken;            // ERC20 share contract
         uint256 revenuePool;           // ETH accumulated for share holders
         bytes32 contentHash;           // cryptographic fingerprint of content/image
+        uint256 blockNumber;           // block number where patent was minted
+        uint256 registrationTimestamp; // timestamp when asset was patented
+        string  title;                 // title registered in the block
     }
 
     struct License {
@@ -121,14 +124,18 @@ contract IPRegistry is ERC721 {
        1. REGISTER PROPERTY (Enforces unique CID and unique contentHash)
        ============================================================ */
     function registerProperty(string memory cid) public {
-        registerPropertyWithHash(cid, bytes32(0));
+        registerPropertyWithDetails(cid, bytes32(0), "");
     }
 
     function registerPropertyWithHash(string memory cid, bytes32 contentHash) public {
+        registerPropertyWithDetails(cid, contentHash, "");
+    }
+
+    function registerPropertyWithDetails(string memory cid, bytes32 contentHash, string memory title) public {
         require(bytes(cid).length > 0, "CID cannot be empty");
-        require(!isCidRegistered[cid], "IP Protection: Asset with this image/CID is already registered!");
+        require(!isCidRegistered[cid], "IP Protection: Asset with this image/CID is already patented on-chain!");
         if (contentHash != bytes32(0)) {
-            require(!isContentHashRegistered[contentHash], "IP Protection: Asset with this content hash is already registered!");
+            require(!isContentHashRegistered[contentHash], "IP Protection: Asset with this content hash is already patented on-chain!");
             isContentHashRegistered[contentHash] = true;
             contentHashToPropertyId[contentHash] = propertyCounter;
         }
@@ -149,7 +156,10 @@ contract IPRegistry is ERC721 {
             licensesSold:   0,
             shareToken:     address(shareToken),
             revenuePool:    0,
-            contentHash:    contentHash
+            contentHash:    contentHash,
+            blockNumber:    block.number,
+            registrationTimestamp: block.timestamp,
+            title:          title
         });
 
         versionCids[id][1] = cid;
@@ -397,5 +407,34 @@ contract IPRegistry is ERC721 {
     function getPropertyByContentHash(bytes32 contentHash) public view returns (uint256) {
         require(isContentHashRegistered[contentHash], "Content hash is not registered");
         return contentHashToPropertyId[contentHash];
+    }
+
+    function getPatentByCid(string memory cid) public view returns (
+        uint256 id,
+        address patentOwner,
+        uint256 blockNumber,
+        uint256 timestamp,
+        bytes32 contentHash,
+        string memory title
+    ) {
+        require(isCidRegistered[cid], "Asset is not patented on blockchain");
+        uint256 propId = cidToPropertyId[cid];
+        Property memory p = properties[propId];
+        return (propId, ownerOf(propId), p.blockNumber, p.registrationTimestamp, p.contentHash, p.title);
+    }
+
+    function getPatentByHash(bytes32 contentHash) public view returns (
+        uint256 id,
+        address patentOwner,
+        uint256 blockNumber,
+        uint256 timestamp,
+        string memory cid,
+        string memory title
+    ) {
+        require(isContentHashRegistered[contentHash], "Asset hash is not patented on blockchain");
+        uint256 propId = contentHashToPropertyId[contentHash];
+        Property memory p = properties[propId];
+        string memory propCid = versionCids[propId][p.currentVersion];
+        return (propId, ownerOf(propId), p.blockNumber, p.registrationTimestamp, propCid, p.title);
     }
 }

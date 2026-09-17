@@ -143,7 +143,9 @@ export function Register({ onRegistered, showToast }) {
             let tx;
             const hashToPass = contentHash || ethers.ZeroHash;
             try {
-                if (typeof contract.registerPropertyWithHash === "function") {
+                if (typeof contract.registerPropertyWithDetails === "function") {
+                    tx = await contract.registerPropertyWithDetails(cid, hashToPass, title || file.name);
+                } else if (typeof contract.registerPropertyWithHash === "function") {
                     tx = await contract.registerPropertyWithHash(cid, hashToPass);
                 } else {
                     tx = await contract.registerProperty(cid);

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { css, Spinner, fmt } from "../components/UIPrimitives";
 import { getContract } from "../contract";
 
@@ -24,6 +24,8 @@ export function Marketplace({ onBuy }) {
                         priceWei: price,
                         cid,
                         pool: fmt(prop.revenuePool),
+                        title: prop.title || `Property #${i}`,
+                        blockNumber: prop.blockNumber && Number(prop.blockNumber) > 0 ? Number(prop.blockNumber) : null,
                     });
                 }
                 setProperties(items);
@@ -82,15 +84,22 @@ export function Marketplace({ onBuy }) {
                     >
                         {/* Header */}
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                            <div>
+                            <div style={{ flex: 1, marginRight: 8 }}>
                                 <div style={{ fontFamily: "Syne", fontSize: 16, fontWeight: 700 }}>
-                                    Property #{p.id}
+                                    {p.title}
                                 </div>
                                 <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
-                                    {p.cid ? `${p.cid.slice(0, 18)}…` : "No CID"}
+                                    Property #{p.id} · {p.cid ? `${p.cid.slice(0, 14)}…` : "No CID"}
                                 </div>
                             </div>
-                            <span style={css.pill("accent")}>v{p.version}</span>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                {p.blockNumber && (
+                                    <span style={{ ...css.pill("green"), fontSize: 10 }}>
+                                        Block #{p.blockNumber}
+                                    </span>
+                                )}
+                                <span style={css.pill("accent")}>v{p.version}</span>
+                            </div>
                         </div>
 
                         {/* IPFS Link */}

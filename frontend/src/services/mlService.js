@@ -1,4 +1,4 @@
-﻿import axios from "axios";
+import axios from "axios";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
 const ML_SERVICE_URL = import.meta.env.VITE_ML_SERVICE_URL || "http://localhost:8000";
@@ -49,22 +49,31 @@ export async function verifyIPAsset(file, rawText = "") {
  * Syncs newly registered on-chain IP to the ML corpus.
  */
 export async function syncAssetToMLCorpus(id, title, cid, owner, file, textContent = "") {
-    try {
-        const formData = new FormData();
-        formData.append("id", id);
-        formData.append("title", title || `Property #${id}`);
-        formData.append("cid", cid);
-        formData.append("owner", owner || "");
-        if (file) formData.append("file", file);
-        if (textContent) formData.append("text_content", textContent);
+    const formData = new FormData();
+    formData.append("id", id);
+    formData.append("title", title || `Property #${id}`);
+    formData.append("cid", cid);
+    formData.append("owner", owner || "");
+    if (file) formData.append("file", file);
+    if (textContent) formData.append("text_content", textContent);
 
-        try {
-            await axios.post(`${BACKEND_URL}/api/corpus/register`, formData, { timeout: 8000 });
-        } catch {
-            await axios.post(`${ML_SERVICE_URL}/corpus/register`, formData, { timeout: 8000 });
+    try {
+        const res = await axios.post(`${BACKEND_URL}/api/corpus/register`, formData, { timeout: 10000 });
+        return res.data;
+    } catch (backendErr) {
+        if (backendErr.response && (backendErr.response.status === 403 || backendErr.response.status === 409)) {
+            const msg = backendErr.response.data?.error || backendErr.response.data?.detail || "Patent conflict: Asset is already registered or patented.";
+            throw new Error(msg);
         }
-    } catch (e) {
-        console.warn("[Could not sync to ML corpus database]:", e.message);
+        try {
+            const mlRes = await axios.post(`${ML_SERVICE_URL}/corpus/register`, formData, { timeout: 10000 });
+            return mlRes.data;
+        } catch (mlErr) {
+            if (mlErr.response && (mlErr.response.status === 403 || mlErr.response.status === 409)) {
+                throw new Error(mlErr.response.data?.detail || "Duplicate asset: Already registered in corpus.");
+            }
+            console.warn("[Could not sync to ML corpus database]:", mlErr.message);
+        }
     }
 }
 
